@@ -17,7 +17,7 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 endif()
 
 set(HSIZE  256 CACHE STRING "half group size; 2*HSIZE keys per batch inversion")
-set(FILTER 20  CACHE STRING "log2 of prefilter bits; 20 = 128 KB shared per block")
+set(FILTER 19  CACHE STRING "log2 of prefilter bits; 19 = 64 KB shared per block")
 
 set(KH_DEFS HSIZE=${HSIZE} FILTER_LOG2_BITS=${FILTER})
 if(MSVC)

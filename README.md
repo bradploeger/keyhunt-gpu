@@ -92,14 +92,15 @@ Tunables, all optional:
 
 ```
 make HSIZE=128        # keys per batch inversion = 2*HSIZE (default 256)
-make FILTER=17        # log2 of the prefilter bits (default 20 = 128 KB shared)
+make FILTER=17        # log2 of the prefilter bits (default 19 = 64 KB shared)
 ```
 
-The default `FILTER=20` prefilter needs 128 KB of shared memory per block. The
-tool opts into this automatically at launch (`cudaFuncAttributeMaxDynamicShared`
-`MemorySize`), which Ampere and newer support; if the card cannot supply that
-much it fails with a clear message telling you to rebuild with a smaller
-`FILTER` (e.g. `make FILTER=17` for 32 KB). Larger `HSIZE` and `FILTER` trade
+The default `FILTER=19` prefilter needs 64 KB of shared memory per block, past
+the 48 KB default, so the tool opts into it at launch (`cudaFuncAttributeMax`
+`DynamicSharedMemorySize`), which Ampere and newer support comfortably (their
+opt-in ceiling is ~99 KB). If the card cannot supply that much it fails with a
+clear message telling you to rebuild with a smaller `FILTER` (e.g.
+`make FILTER=17` for 16 KB). Larger `HSIZE` and `FILTER` trade
 more shared/local memory for fewer inversions and a tighter prefilter; measure
 occupancy with `-Xptxas -v` after changing them.
 
@@ -206,8 +207,8 @@ The inversion uses the standard 255-squaring / 15-multiplication addition chain
 for `a^(p-2)`, amortised to about one multiplication per key.
 
 Matching is two-stage, because 1.1e12 lookups into a table will otherwise become
-the bottleneck. First a 32 KB bitmap held in **shared memory**, indexed by 18
-bits of X — with 35,000 targets this rejects about 87% of candidates at
+the bottleneck. First a 64 KB bitmap held in **shared memory**, indexed by 19
+bits of X — with 35,000 targets this rejects about 94% of candidates at
 register speed. Survivors probe an open-addressed hash table in global memory
 holding 64 bits of X taken verbatim. None of this is hashing — the three index
 functions are literal bit-slices of the X coordinate (`x[1]` low bits, `x[1]`
@@ -241,9 +242,12 @@ spills, that is the first thing to fix.
   (`(HSIZE+1) * 32` bytes). 128 and 256 are both reasonable; measure.
 - **`--blocks` / `--threads`** — start at 8x SM count and 256. More blocks helps
   until local memory pressure bites.
-- **`FILTER`** — 19 gives a 64 KB bitmap and rejects ~93% instead of ~87%, at
-  the cost of fewer resident blocks per SM. Worth trying if the profiler shows
-  you are memory-bound rather than ALU-bound.
+- **`FILTER`** — the default 19 gives a 64 KB bitmap rejecting ~94% of
+  candidates (at 35k targets). Dropping to 17 (16 KB) or 15 (4 KB) frees shared
+  memory for more resident blocks per SM at a lower reject rate (~77% / ~34%);
+  worth trying if the profiler shows you are occupancy-limited rather than
+  ALU-bound. Going the other way (20 = 128 KB bitmap) reaches ~97% but needs a
+  Hopper-class shared-memory budget.
 - **`--groups`** — larger means less host round-tripping, but a coarser progress
   bar and checkpoint interval.
 
