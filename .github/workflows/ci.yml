@@ -1,0 +1,18 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  host-tests:
+    # GitHub's runners have no GPU, so the CUDA binary can't be built or run
+    # here. These are the host-only test suites, which validate all the field
+    # and curve arithmetic, the kernel's group/offset logic (replayed on the
+    # CPU), target parsing, and the progress meter. The device path is covered
+    # by ./keyhunt-gpu --selftest on real hardware.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install a C++ toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++ python3
+      - name: regenerate reference vectors and run all host tests
+        run: |
+          python3 tools/gen_vectors.py > test/vectors.h
+          make test

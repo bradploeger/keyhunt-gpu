@@ -1,0 +1,28 @@
+# Build output
+keyhunt-gpu
+keyhunt-gpu.exe
+build/
+*.o
+*.obj
+*.exe
+*.exp
+*.lib
+*.pdb
+
+# Test binaries (built to /tmp by the Makefile, but just in case)
+test_math
+test_kernel_logic
+test_targets
+test_progress
+
+# Runtime / user data
+targets.txt
+found.txt
+state.txt
+*.db
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
