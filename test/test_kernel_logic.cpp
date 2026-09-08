@@ -27,22 +27,31 @@ int main() {
   uint64_t kj[4] = {GRP_SIZE, 0, 0, 0};
   ec_scalar_mul_g(GX[HSIZE], GY[HSIZE], kj);
 
-  // arbitrary 27-byte prefix, 8 unknown bits for a quick exhaustive check
-  uint64_t K0[4] = {0x1122334455667788ULL, 0x99AABBCCDDEEFF00ULL,
-                    0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
-  K0[0] &= ~0xFFULL;  // clear the unknown low bits
-  #ifndef UBITS
-#define UBITS 8
-#endif
-  const int unknownBits = UBITS;
-  const uint64_t totalKeys = 1ULL << unknownBits;
-
+  // The range must be large enough that each thread gets several whole groups,
+  // and GRP_SIZE scales with HSIZE -- so derive the range from HSIZE rather than
+  // hard-coding a bit width. Otherwise a production build (e.g. -DHSIZE=128,
+  // GRP_SIZE=256) compiled against a fixed 2^8 range yields 0 groups/thread and
+  // the whole range goes unvisited.
   #ifndef NTHR
 #define NTHR 4
 #endif
+  #ifndef GROUPS_PER_THREAD
+#define GROUPS_PER_THREAD 4
+#endif
   const uint32_t nThreads = NTHR;
-  const uint64_t keysPerThread = totalKeys / nThreads;
-  const uint64_t groups = keysPerThread / GRP_SIZE;
+  const uint64_t keysPerThread = (uint64_t)GRP_SIZE * GROUPS_PER_THREAD;
+  const uint64_t totalKeys = keysPerThread * nThreads;
+  const uint64_t groups = GROUPS_PER_THREAD;
+
+  // K0 is an arbitrary 27-byte prefix; clear enough low bits that adding any
+  // offset in [0, totalKeys) never disturbs the fixed part.
+  uint64_t K0[4] = {0x1122334455667788ULL, 0x99AABBCCDDEEFF00ULL,
+                    0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+  {
+    uint64_t mask = 1;
+    while (mask < totalKeys) mask <<= 1;   // next power of two >= totalKeys
+    K0[0] &= ~(mask - 1);
+  }
 
   std::vector<int> visits(totalKeys, 0);
   int errs = 0;
@@ -124,8 +133,8 @@ int main() {
     if (visits[i] == 0) missing++;
     else if (visits[i] > 1) dup++;
   }
-  printf("range 2^%d = %llu keys, %u threads, %llu groups/thread\n",
-         unknownBits, (unsigned long long)totalKeys, nThreads,
+  printf("HSIZE=%d GRP_SIZE=%d, %llu keys, %u threads, %llu groups/thread\n",
+         HSIZE, GRP_SIZE, (unsigned long long)totalKeys, nThreads,
          (unsigned long long)groups);
   printf("missing offsets : %d\n", missing);
   printf("duplicate       : %d\n", dup);

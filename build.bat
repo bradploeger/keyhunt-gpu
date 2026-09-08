@@ -24,7 +24,7 @@ if errorlevel 1 (echo BUILD FAILED & exit /b 1)
 
 echo.
 echo Building host tests ...
-for %%T in (test_math test_kernel_logic test_targets) do (
+for %%T in (test_math test_kernel_logic test_targets test_progress) do (
   cl /nologo /O2 /EHsc /std:c++14 /D_CRT_SECURE_NO_WARNINGS ^
      /DHSIZE=%HSIZE% /DFILTER_LOG2_BITS=%FILTER% ^
      test\%%T.cpp /Fe:%%T.exe /Fo:%%T.obj >nul
@@ -39,6 +39,8 @@ echo.
 test_kernel_logic.exe  || exit /b 1
 echo.
 test_targets.exe       || exit /b 1
+echo.
+test_progress.exe      || exit /b 1
 
 echo.
 echo Build OK. Now run:  keyhunt-gpu.exe --selftest
