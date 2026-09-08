@@ -11,30 +11,52 @@
 #include <cstdint>
 #include <cstring>
 
-typedef unsigned __int128 u128;
-static inline uint64_t LO(u128 x){return (uint64_t)x;}
-static inline uint64_t HIp(uint64_t a,uint64_t b){return (uint64_t)(((u128)a*b)>>64);}
-static inline uint64_t LOp(uint64_t a,uint64_t b){return (uint64_t)((u128)a*b);}
+#if defined(_MSC_VER)
+#include <intrin.h>   // __umulh
+#endif
 
-// PTX carry-flag machine. CF is a single bit.
+// 64x64 -> high 64 bits, portable across MSVC / GCC / Clang.
+static inline uint64_t HIp(uint64_t a, uint64_t b) {
+#if defined(_MSC_VER)
+  return __umulh(a, b);
+#else
+  return (uint64_t)(((unsigned __int128)a * (unsigned __int128)b) >> 64);
+#endif
+}
+static inline uint64_t LOp(uint64_t a, uint64_t b) { return a * b; }  // low 64 wraps
+
+// Sum three 64-bit values, returning the low 64 in *lo and the carry (0/1/2)
+// as the return value. Used to model PTX add-with-carry without a 128-bit type:
+// each accumulator step adds at most three 64-bit quantities, so the carry out
+// never exceeds 2 and always fits in the flag chain the way PTX defines it.
+static inline uint64_t add3(uint64_t x, uint64_t y, uint64_t z, uint64_t *lo) {
+  uint64_t s = x + y;
+  uint64_t c = (s < x);
+  uint64_t s2 = s + z;
+  c += (s2 < s);
+  *lo = s2;
+  return c;
+}
+
+// PTX carry-flag machine. CF holds the carry out of the previous .cc op.
 struct M {
-  uint64_t CF=0;
+  uint64_t CF = 0;
   // add.cc: d = a+b, set CF
-  uint64_t add_cc(uint64_t a,uint64_t b){ u128 s=(u128)a+b; CF=(uint64_t)(s>>64); return (uint64_t)s; }
+  uint64_t add_cc(uint64_t a, uint64_t b) { uint64_t lo; CF = add3(a, b, 0, &lo); return lo; }
   // addc.cc: d = a+b+CF, set CF
-  uint64_t addc_cc(uint64_t a,uint64_t b){ u128 s=(u128)a+b+CF; CF=(uint64_t)(s>>64); return (uint64_t)s; }
-  // addc: d = a+b+CF, CF unchanged-after (we don't read it again)
-  uint64_t addc(uint64_t a,uint64_t b){ u128 s=(u128)a+b+CF; CF=(uint64_t)(s>>64); return (uint64_t)s; }
+  uint64_t addc_cc(uint64_t a, uint64_t b) { uint64_t lo; CF = add3(a, b, CF, &lo); return lo; }
+  // addc: d = a+b+CF (then CF updated)
+  uint64_t addc(uint64_t a, uint64_t b) { uint64_t lo; CF = add3(a, b, CF, &lo); return lo; }
   // mad.lo.cc: d = lo(a*b)+c, set CF
-  uint64_t madlo_cc(uint64_t a,uint64_t b,uint64_t c){ u128 s=(u128)LOp(a,b)+c; CF=(uint64_t)(s>>64); return (uint64_t)s; }
+  uint64_t madlo_cc(uint64_t a, uint64_t b, uint64_t c) { uint64_t lo; CF = add3(LOp(a, b), c, 0, &lo); return lo; }
   // madc.lo.cc: d = lo(a*b)+c+CF, set CF
-  uint64_t madclo_cc(uint64_t a,uint64_t b,uint64_t c){ u128 s=(u128)LOp(a,b)+c+CF; CF=(uint64_t)(s>>64); return (uint64_t)s; }
+  uint64_t madclo_cc(uint64_t a, uint64_t b, uint64_t c) { uint64_t lo; CF = add3(LOp(a, b), c, CF, &lo); return lo; }
   // mad.hi.cc: d = hi(a*b)+c, set CF
-  uint64_t madhi_cc(uint64_t a,uint64_t b,uint64_t c){ u128 s=(u128)HIp(a,b)+c; CF=(uint64_t)(s>>64); return (uint64_t)s; }
+  uint64_t madhi_cc(uint64_t a, uint64_t b, uint64_t c) { uint64_t lo; CF = add3(HIp(a, b), c, 0, &lo); return lo; }
   // madc.hi.cc: d = hi(a*b)+c+CF, set CF
-  uint64_t madchi_cc(uint64_t a,uint64_t b,uint64_t c){ u128 s=(u128)HIp(a,b)+c+CF; CF=(uint64_t)(s>>64); return (uint64_t)s; }
-  // madc.hi: d = hi(a*b)+c+CF
-  uint64_t madchi(uint64_t a,uint64_t b,uint64_t c){ u128 s=(u128)HIp(a,b)+c+CF; CF=(uint64_t)(s>>64); return (uint64_t)s; }
+  uint64_t madchi_cc(uint64_t a, uint64_t b, uint64_t c) { uint64_t lo; CF = add3(HIp(a, b), c, CF, &lo); return lo; }
+  // madc.hi: d = hi(a*b)+c+CF (then CF updated)
+  uint64_t madchi(uint64_t a, uint64_t b, uint64_t c) { uint64_t lo; CF = add3(HIp(a, b), c, CF, &lo); return lo; }
 };
 
 // Emulate the PTX sequence EXACTLY as written in secp256k1.h
@@ -84,24 +106,41 @@ static void ptx_mul(uint64_t out[8], const uint64_t a[4], const uint64_t b[4]){
   out[0]=r0;out[1]=r1;out[2]=r2;out[3]=r3;out[4]=r4;out[5]=r5;out[6]=r6;out[7]=r7;
 }
 
-// reference: full 512-bit schoolbook via u128
-static void ref_mul(uint64_t out[8], const uint64_t a[4], const uint64_t b[4]){
-  u128 acc[8]={0};
-  // accumulate into a wide array of 128-bit columns with carry propagation
-  uint64_t tmp[8]={0};
-  u128 carry=0;
-  // simplest correct: bignum multiply
-  unsigned __int128 res[9]={0};
-  for(int i=0;i<4;i++){
-    unsigned __int128 c=0;
-    for(int j=0;j<4;j++){
-      unsigned __int128 cur = (unsigned __int128)res[i+j] + (unsigned __int128)a[i]*b[j] + c;
-      res[i+j] = (uint64_t)cur;
-      c = cur>>64;
+// reference: full 512-bit schoolbook, computed with 64-bit hi/lo pieces and
+// explicit carry propagation -- deliberately a different accumulation order
+// than ptx_mul above, so agreement is a real cross-check, not a copy.
+static void ref_mul(uint64_t out[8], const uint64_t a[4], const uint64_t b[4]) {
+  uint64_t res[8] = {0,0,0,0,0,0,0,0};
+  for (int i = 0; i < 4; i++) {
+    uint64_t carry = 0;
+    for (int j = 0; j < 4; j++) {
+      uint64_t lo = LOp(a[i], b[j]);
+      uint64_t hi = HIp(a[i], b[j]);
+      // column = res[i+j] + lo + carry, a value up to ~2^66; keep it as
+      // (chi:t0) so no 64-bit add can silently overflow.
+      uint64_t t0, chi = add3(res[i + j], lo, carry, &t0);
+      res[i + j] = t0;
+      // next carry = hi + chi; chi <= 2 and hi <= 2^64-2, but add safely anyway
+      uint64_t nc, cc = add3(hi, chi, 0, &nc);
+      carry = nc;
+      // cc is the carry out of hi+chi (0 or 1); fold it one limb higher
+      if (cc) {
+        for (int k = i + j + 2; k < 8; k++) {
+          uint64_t s = res[k] + 1; res[k] = s;
+          if (s != 0) break;   // no further carry
+        }
+      }
     }
-    res[i+4] += c;
+    // add the running carry into the next limb, propagating if needed
+    uint64_t k = i + 4;
+    uint64_t s = res[k] + carry; 
+    uint64_t prop = (s < res[k]) ? 1 : 0;
+    res[k] = s;
+    for (k = i + 5; prop && k < 8; k++) {
+      uint64_t s2 = res[k] + 1; res[k] = s2; prop = (s2 == 0) ? 1 : 0;
+    }
   }
-  for(int i=0;i<8;i++) out[i]=(uint64_t)res[i];
+  for (int i = 0; i < 8; i++) out[i] = res[i];
 }
 
 static uint64_t st=0x123456789ULL;
@@ -112,10 +151,14 @@ int main(){
   for(int i=0;i<500000;i++){
     uint64_t a[4]={rnd(),rnd(),rnd(),rnd()},b[4]={rnd(),rnd(),rnd(),rnd()};
     uint64_t o1[8],o2[8]; ptx_mul(o1,a,b); ref_mul(o2,a,b);
-    if(memcmp(o1,o2,64)){ printf("MUL MISMATCH i=%d\n",i);
-      for(int k=7;k>=0;k--)printf("%016llx",(unsigned long long)o1[k]);printf("  ptx\n");
-      for(int k=7;k>=0;k--)printf("%016llx",(unsigned long long)o2[k]);printf("  ref\n");
-      if(++fails>3)break;}
+    if(memcmp(o1,o2,64)){
+      printf("MUL MISMATCH i=%d\n",i);
+      for(int k=7;k>=0;k--) printf("%016llx",(unsigned long long)o1[k]);
+      printf("  ptx\n");
+      for(int k=7;k>=0;k--) printf("%016llx",(unsigned long long)o2[k]);
+      printf("  ref\n");
+      if(++fails>3) break;
+    }
   }
   // edge cases
   uint64_t edges[][4]={{~0ULL,~0ULL,~0ULL,~0ULL},{0,0,0,0},{1,0,0,0},
