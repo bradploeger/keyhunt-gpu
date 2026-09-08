@@ -63,18 +63,56 @@ FD uint64_t subb64(uint64_t a, uint64_t b, uint64_t bin, uint64_t *bout) {
   return d2;
 }
 
+// 256-bit add returning the outgoing carry.
+// On device we emit a single hardware carry chain (add.cc / addc.cc / addc);
+// splitting it across separate C statements would not guarantee the carry flag
+// survives between them. The portable version is the host reference and is what
+// the test suite exercises; the PTX must compute the identical result.
 FD uint64_t u256_add(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+#if defined(__CUDA_ARCH__)
+  uint64_t r0, r1, r2, r3, carry;
+  asm("{\n\t"
+      "add.cc.u64  %0, %5, %9;\n\t"
+      "addc.cc.u64 %1, %6, %10;\n\t"
+      "addc.cc.u64 %2, %7, %11;\n\t"
+      "addc.cc.u64 %3, %8, %12;\n\t"
+      "addc.u64    %4, 0, 0;\n\t"
+      "}"
+      : "=l"(r0), "=l"(r1), "=l"(r2), "=l"(r3), "=l"(carry)
+      : "l"(a[0]), "l"(a[1]), "l"(a[2]), "l"(a[3]),
+        "l"(b[0]), "l"(b[1]), "l"(b[2]), "l"(b[3]));
+  r[0] = r0; r[1] = r1; r[2] = r2; r[3] = r3;
+  return carry;
+#else
   uint64_t c = 0;
 #pragma unroll
   for (int i = 0; i < 4; i++) r[i] = addc64(a[i], b[i], c, &c);
   return c;
+#endif
 }
 
+// 256-bit subtract returning the outgoing borrow (1 if a < b).
 FD uint64_t u256_sub(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+#if defined(__CUDA_ARCH__)
+  uint64_t r0, r1, r2, r3, borrow;
+  asm("{\n\t"
+      "sub.cc.u64  %0, %5, %9;\n\t"
+      "subc.cc.u64 %1, %6, %10;\n\t"
+      "subc.cc.u64 %2, %7, %11;\n\t"
+      "subc.cc.u64 %3, %8, %12;\n\t"
+      "subc.u64    %4, 0, 0;\n\t"     // 0 - borrow = 0xFFFF... if borrow, else 0
+      "}"
+      : "=l"(r0), "=l"(r1), "=l"(r2), "=l"(r3), "=l"(borrow)
+      : "l"(a[0]), "l"(a[1]), "l"(a[2]), "l"(a[3]),
+        "l"(b[0]), "l"(b[1]), "l"(b[2]), "l"(b[3]));
+  r[0] = r0; r[1] = r1; r[2] = r2; r[3] = r3;
+  return borrow & 1ULL;               // subc gives all-ones on borrow; want 0/1
+#else
   uint64_t b_ = 0;
 #pragma unroll
   for (int i = 0; i < 4; i++) r[i] = subb64(a[i], b[i], b_, &b_);
   return b_;
+#endif
 }
 
 FD bool u256_ge_p(const uint64_t a[4]) {
@@ -145,6 +183,63 @@ FD void mul256x64(uint64_t r[5], const uint64_t a[4], uint64_t b) {
 
 // out[8] = a[4] * b[4]
 FD void u256_mul(uint64_t out[8], const uint64_t a[4], const uint64_t b[4]) {
+#if defined(__CUDA_ARCH__)
+  // Schoolbook 4x4 with hardware multiply-add carry chains. Each partial-product
+  // column is a single add.cc/madc chain so the carry flag is never dropped.
+  // This mirrors the portable code below exactly; the two are cross-checked on
+  // the host (which uses the portable path) and via --selftest on device.
+  const uint64_t a0=a[0],a1=a[1],a2=a[2],a3=a[3];
+  const uint64_t b0=b[0],b1=b[1],b2=b[2],b3=b[3];
+  uint64_t r0,r1,r2,r3,r4,r5,r6,r7;
+  asm("{\n\t"
+      ".reg .u64 c;\n\t"
+      // --- column pass by b0 ---
+      "mul.lo.u64      %0, %8,  %12;\n\t"   // r0 = a0*b0 lo
+      "mul.hi.u64      %1, %8,  %12;\n\t"   // r1 = a0*b0 hi
+      "mad.lo.cc.u64   %1, %9,  %12, %1;\n\t"
+      "madc.hi.u64     %2, %9,  %12, 0;\n\t"
+      "mad.lo.cc.u64   %2, %10, %12, %2;\n\t"
+      "madc.hi.u64     %3, %10, %12, 0;\n\t"
+      "mad.lo.cc.u64   %3, %11, %12, %3;\n\t"
+      "madc.hi.u64     %4, %11, %12, 0;\n\t"
+      // --- column pass by b1, accumulate into r1..r5 ---
+      "mad.lo.cc.u64   %1, %8,  %13, %1;\n\t"
+      "madc.hi.cc.u64  %2, %8,  %13, %2;\n\t"
+      "madc.hi.cc.u64  %3, %9,  %13, %3;\n\t"
+      "madc.hi.cc.u64  %4, %10, %13, %4;\n\t"
+      "madc.hi.u64     %5, %11, %13, 0;\n\t"
+      "mad.lo.cc.u64   %2, %9,  %13, %2;\n\t"
+      "madc.lo.cc.u64  %3, %10, %13, %3;\n\t"
+      "madc.lo.cc.u64  %4, %11, %13, %4;\n\t"
+      "addc.u64        %5, %5, 0;\n\t"
+      // --- column pass by b2 ---
+      "mad.lo.cc.u64   %2, %8,  %14, %2;\n\t"
+      "madc.hi.cc.u64  %3, %8,  %14, %3;\n\t"
+      "madc.hi.cc.u64  %4, %9,  %14, %4;\n\t"
+      "madc.hi.cc.u64  %5, %10, %14, %5;\n\t"
+      "madc.hi.u64     %6, %11, %14, 0;\n\t"
+      "mad.lo.cc.u64   %3, %9,  %14, %3;\n\t"
+      "madc.lo.cc.u64  %4, %10, %14, %4;\n\t"
+      "madc.lo.cc.u64  %5, %11, %14, %5;\n\t"
+      "addc.u64        %6, %6, 0;\n\t"
+      // --- column pass by b3 ---
+      "mad.lo.cc.u64   %3, %8,  %15, %3;\n\t"
+      "madc.hi.cc.u64  %4, %8,  %15, %4;\n\t"
+      "madc.hi.cc.u64  %5, %9,  %15, %5;\n\t"
+      "madc.hi.cc.u64  %6, %10, %15, %6;\n\t"
+      "madc.hi.u64     %7, %11, %15, 0;\n\t"
+      "mad.lo.cc.u64   %4, %9,  %15, %4;\n\t"
+      "madc.lo.cc.u64  %5, %10, %15, %5;\n\t"
+      "madc.lo.cc.u64  %6, %11, %15, %6;\n\t"
+      "addc.u64        %7, %7, 0;\n\t"
+      "}"
+      : "=l"(r0),"=l"(r1),"=l"(r2),"=l"(r3),
+        "=l"(r4),"=l"(r5),"=l"(r6),"=l"(r7)
+      : "l"(a0),"l"(a1),"l"(a2),"l"(a3),
+        "l"(b0),"l"(b1),"l"(b2),"l"(b3));
+  out[0]=r0; out[1]=r1; out[2]=r2; out[3]=r3;
+  out[4]=r4; out[5]=r5; out[6]=r6; out[7]=r7;
+#else
   uint64_t t[5];
   mul256x64(t, a, b[0]);
   out[0] = t[0]; out[1] = t[1]; out[2] = t[2]; out[3] = t[3]; out[4] = t[4];
@@ -160,6 +255,51 @@ FD void u256_mul(uint64_t out[8], const uint64_t a[4], const uint64_t b[4]) {
     out[j + 4] = addc64(out[j + 4], t[4], c, &c);
     if (j + 5 < 8) out[j + 5] += c;  // for j==3 the carry is provably 0
   }
+#endif
+}
+
+// out[8] = a[4]^2. A dedicated squaring: the six cross products a_i*a_j (i<j)
+// each occur twice in a*a, so we compute them once and double, then add the
+// four diagonal terms a_i^2. That is 10 multiplies versus 16 for a general
+// multiply. Correctness is verified exhaustively against u256_mul(a,a) on the
+// host (test/test_math.cpp and the squaring stress test).
+FD void u256_sqr(uint64_t out[8], const uint64_t a[4]) {
+  uint64_t lo, hi, c;
+  uint64_t t[8];
+#pragma unroll
+  for (int i = 0; i < 8; i++) t[i] = 0;
+
+  // add (hi:lo) at limb position p, propagating carry upward
+  #define ADD_AT(p, LO, HI) do {                       \
+      uint64_t _cc;                                    \
+      t[(p)]   = addc64(t[(p)],   (LO), 0,   &_cc);     \
+      t[(p)+1] = addc64(t[(p)+1], (HI), _cc, &_cc);     \
+      for (int _k = (p)+2; _cc && _k < 8; _k++)         \
+        t[_k] = addc64(t[_k], 0, _cc, &_cc);            \
+    } while (0)
+
+  // the six distinct cross products a_i*a_j (i<j), at weight i+j
+  lo = a[0]*a[1]; hi = mulhi64(a[0],a[1]); ADD_AT(1, lo, hi);
+  lo = a[0]*a[2]; hi = mulhi64(a[0],a[2]); ADD_AT(2, lo, hi);
+  lo = a[0]*a[3]; hi = mulhi64(a[0],a[3]); ADD_AT(3, lo, hi);
+  lo = a[1]*a[2]; hi = mulhi64(a[1],a[2]); ADD_AT(3, lo, hi);
+  lo = a[1]*a[3]; hi = mulhi64(a[1],a[3]); ADD_AT(4, lo, hi);
+  lo = a[2]*a[3]; hi = mulhi64(a[2],a[3]); ADD_AT(5, lo, hi);
+
+  // double the cross-term sum: t <<= 1
+  c = 0;
+#pragma unroll
+  for (int i = 0; i < 8; i++) { uint64_t nc = t[i] >> 63; t[i] = (t[i] << 1) | c; c = nc; }
+
+  // add the diagonal squares a_i^2 at even positions
+  ADD_AT(0, a[0]*a[0], mulhi64(a[0],a[0]));
+  ADD_AT(2, a[1]*a[1], mulhi64(a[1],a[1]));
+  ADD_AT(4, a[2]*a[2], mulhi64(a[2],a[2]));
+  ADD_AT(6, a[3]*a[3], mulhi64(a[3],a[3]));
+
+  #undef ADD_AT
+#pragma unroll
+  for (int i = 0; i < 8; i++) out[i] = t[i];
 }
 
 // Fold a 512-bit value down to a canonical 256-bit residue mod p.
@@ -197,7 +337,11 @@ FD void fe_mul(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
   fe_reduce512(r, t);
 }
 
-FD void fe_sqr(uint64_t r[4], const uint64_t a[4]) { fe_mul(r, a, a); }
+FD void fe_sqr(uint64_t r[4], const uint64_t a[4]) {
+  uint64_t t[8];
+  u256_sqr(t, a);
+  fe_reduce512(r, t);
+}
 
 FD void fe_sqr_n(uint64_t r[4], const uint64_t a[4], int n) {
   fe_sqr(r, a);

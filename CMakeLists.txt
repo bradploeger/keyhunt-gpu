@@ -16,8 +16,8 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   endif()
 endif()
 
-set(HSIZE  128 CACHE STRING "half group size; 2*HSIZE keys per batch inversion")
-set(FILTER 18  CACHE STRING "log2 of prefilter bits; 18 = 32 KB shared per block")
+set(HSIZE  256 CACHE STRING "half group size; 2*HSIZE keys per batch inversion")
+set(FILTER 20  CACHE STRING "log2 of prefilter bits; 20 = 128 KB shared per block")
 
 set(KH_DEFS HSIZE=${HSIZE} FILTER_LOG2_BITS=${FILTER})
 if(MSVC)
@@ -32,7 +32,7 @@ target_compile_options(keyhunt-gpu PRIVATE
 
 # ---- host-side tests, no GPU required
 enable_testing()
-foreach(t test_math test_kernel_logic test_targets test_progress)
+foreach(t test_math test_kernel_logic test_targets test_progress test_ptx_sequence)
   add_executable(${t} test/${t}.cpp)
   target_compile_definitions(${t} PRIVATE ${KH_DEFS})
   add_test(NAME ${t} COMMAND ${t})

@@ -96,6 +96,34 @@ int main() {
     }
   }
 
+  // Dedicated squaring must match multiply-based squaring on random inputs and
+  // edge cases. This is what makes fe_sqr safe to substitute into the inverse
+  // chain (255 squarings) and every point doubling.
+  printf("dedicated squaring vs multiply\n");
+  {
+    uint64_t st = 0x243F6A8885A308D3ULL;
+    for (int i = 0; i < 100000; i++) {
+      st ^= st << 13; st ^= st >> 7; st ^= st << 17; uint64_t a0 = st;
+      st ^= st << 13; st ^= st >> 7; st ^= st << 17; uint64_t a1 = st;
+      st ^= st << 13; st ^= st >> 7; st ^= st << 17; uint64_t a2 = st;
+      st ^= st << 13; st ^= st >> 7; st ^= st << 17; uint64_t a3 = st;
+      uint64_t a[4] = {a0, a1, a2, a3}, s1[4], s2[4];
+      fe_sqr(s1, a);
+      fe_mul(s2, a, a);
+      check("sqr", i, s1, s2);
+      if (fails > 4) break;
+    }
+    uint64_t edges[][4] = {
+      {0,0,0,0}, {1,0,0,0}, {P0-1,P1,P2,P3}, {P0,P1,P2,P3},
+      {~0ULL,~0ULL,~0ULL,~0ULL}, {PC,0,0,0}, {0,0,0,0x8000000000000000ULL},
+    };
+    for (auto &a : edges) {
+      uint64_t s1[4], s2[4];
+      fe_sqr(s1, a); fe_mul(s2, a, a);
+      check("sqr_edge", 0, s1, s2);
+    }
+  }
+
   if (fails == 0) printf("\nALL TESTS PASSED\n");
   else printf("\n%d FAILURES\n", fails);
   return fails ? 1 : 0;

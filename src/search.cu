@@ -319,6 +319,27 @@ static int run_search(const Config &cfg, const std::vector<Target> &targets,
   std::map<std::string, size_t> byX;
   for (size_t i = 0; i < targets.size(); i++) byX[hex256(targets[i].x)] = i;
 
+  // The prefilter bitmap lives in dynamic shared memory: FILTER_WORDS*4 bytes.
+  // At FILTER=20 that is 128 KB, well past the 48 KB default, so we must opt in
+  // via cudaFuncAttributeMaxDynamicSharedMemorySize. If the card cannot supply
+  // that much (the opt-in max is ~99 KB on Ampere, ~227 KB on Hopper), fail with
+  // a clear message rather than a cryptic launch error.
+  const size_t sharedBytes = (size_t)FILTER_WORDS * 4;
+  {
+    cudaFuncAttributes fa;
+    CUDA_CHECK(cudaFuncGetAttributes(&fa, search_kernel));
+    cudaError_t se = cudaFuncSetAttribute(
+        search_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sharedBytes);
+    if (se != cudaSuccess) {
+      fprintf(stderr,
+        "\nThis GPU cannot provide %zu KB of shared memory per block, which the\n"
+        "prefilter needs at FILTER_LOG2_BITS=%d. Rebuild with a smaller FILTER,\n"
+        "e.g. `make FILTER=17` (32 KB) or `make FILTER=15` (8 KB).\n",
+        sharedBytes / 1024, FILTER_LOG2_BITS);
+      return -1;
+    }
+  }
+
   uint32_t *d_filter; uint64_t *d_slots; uint32_t *d_idx;
   CUDA_CHECK(cudaMalloc(&d_filter, tt.filter.size() * 4));
   CUDA_CHECK(cudaMalloc(&d_slots, tt.slots.size() * 8));
@@ -363,7 +384,7 @@ static int run_search(const Config &cfg, const std::vector<Target> &targets,
 
   while (groupBase < groupsPerThread) {
     uint64_t chunk = std::min(cfg.groupsPerLaunch, groupsPerThread - groupBase);
-    search_kernel<<<cfg.blocks, cfg.threads, FILTER_WORDS * 4>>>(
+    search_kernel<<<cfg.blocks, cfg.threads, sharedBytes>>>(
         d_px, d_py, d_filter, d_slots, d_idx, tt.mask,
         chunk, groupBase, keysPerThread, d_res, d_cnt);
     CUDA_CHECK(cudaGetLastError());

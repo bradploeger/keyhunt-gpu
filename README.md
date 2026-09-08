@@ -30,14 +30,20 @@ That checks the field arithmetic, `k*G`, batch inversion, and the affine
 addition path against reference vectors generated independently in Python, and
 then replays the exact loop structure of the CUDA kernel on the CPU to confirm
 every offset in a range is visited exactly once with the correct X coordinate.
-It also parses every accepted target format and probes 20,000 targets through
-the same index functions the kernel uses. All of it passes.
+It also cross-checks the dedicated squaring against multiply-based squaring,
+parses every accepted target format, probes 20,000 targets through the same
+index functions the kernel uses, and re-implements the device PTX multiply
+sequence under a carry-flag model to check it against an independent bignum
+multiply. All of it passes.
 
-I could not compile or run the CUDA path — no `nvcc` and no GPU on the machine
-I built this on. The device code shares the same header the tests exercise, but
-**run `./keyhunt-gpu --selftest` first.** It validates device arithmetic against
-the host and then plants a known key in a small range and confirms the search
-finds it. If that passes, the pipeline is sound end to end.
+The CUDA path itself cannot be compiled or run without a GPU. Its hot arithmetic
+uses hand-written PTX carry chains and a dedicated squaring; the host tests above
+validate the *logic* of both (the squaring directly, the PTX multiply via an
+instruction-for-instruction emulation), but PTX on real silicon can still differ
+from the model. **Run `./keyhunt-gpu --selftest` on the target GPU first.** It
+validates device arithmetic against the host and then plants a known key in a
+small range and confirms the search finds it. If that passes, the pipeline is
+sound end to end.
 
 ---
 
@@ -85,9 +91,17 @@ ctest --test-dir build
 Tunables, all optional:
 
 ```
-make HSIZE=256        # keys per batch inversion = 2*HSIZE (default 128)
-make FILTER=19        # log2 of the shared-memory prefilter bits (default 18 = 32 KB)
+make HSIZE=128        # keys per batch inversion = 2*HSIZE (default 256)
+make FILTER=17        # log2 of the prefilter bits (default 20 = 128 KB shared)
 ```
+
+The default `FILTER=20` prefilter needs 128 KB of shared memory per block. The
+tool opts into this automatically at launch (`cudaFuncAttributeMaxDynamicShared`
+`MemorySize`), which Ampere and newer support; if the card cannot supply that
+much it fails with a clear message telling you to rebuild with a smaller
+`FILTER` (e.g. `make FILTER=17` for 32 KB). Larger `HSIZE` and `FILTER` trade
+more shared/local memory for fewer inversions and a tighter prefilter; measure
+occupancy with `-Xptxas -v` after changing them.
 
 ## Usage
 
@@ -178,7 +192,7 @@ inverse, which is by far the most expensive field operation. Montgomery's trick
 converts *n* inversions into one inversion plus about 3n multiplications. Each
 thread holds a group centre `P` and computes `P ± iG` for `i = 1..HSIZE` from
 precomputed multiples of `G`, so all the denominators are independent and invert
-together. Default `HSIZE=128` gives 256 keys per inversion.
+together. Default `HSIZE=256` gives 512 keys per inversion.
 
 **3. Both signs share one inverse.** `P + iG` and `P − iG` have the same
 denominator `(x_P − x_iG)`, so one inverse produces two keys. Better still, the
@@ -233,37 +247,40 @@ spills, that is the first thing to fix.
 - **`--groups`** — larger means less host round-tripping, but a coarser progress
   bar and checkpoint interval.
 
-### Where the remaining performance is
+### Device arithmetic: PTX carry chains and dedicated squaring
 
-Two things I left on the table, both worth roughly 1.3–1.8x together:
+Both of these are now implemented in `secp256k1.h`.
 
-**PTX carry chains.** `secp256k1.h` propagates carries portably, with
-`s = a + b; carry = (s < a)`. The compiler recognises much of this, but
-hand-written `add.cc.u64` / `addc.cc.u64` chains are meaningfully tighter. The
-place to start is `mul256x64` and `u256_add`:
+**PTX carry chains.** The device paths of `u256_add`, `u256_sub`, and the
+256×256 `u256_mul` are hand-written `add.cc`/`addc.cc` and `mad.lo.cc`/
+`madc.hi.cc` chains, each kept inside a single `asm` block so the hardware carry
+flag is never dropped between instructions. The portable C versions remain as
+the `#else` branch and are what the host build and the test suite run.
 
-```cpp
-asm("{\n\t"
-    "add.cc.u64  %0, %5, %9;\n\t"
-    "addc.cc.u64 %1, %6, %10;\n\t"
-    "addc.cc.u64 %2, %7, %11;\n\t"
-    "addc.cc.u64 %3, %8, %12;\n\t"
-    "addc.u64    %4, 0, 0;\n\t}"
-    : "=l"(r[0]),"=l"(r[1]),"=l"(r[2]),"=l"(r[3]),"=l"(carry)
-    : "l"(a[0]),"l"(a[1]),"l"(a[2]),"l"(a[3]),
-      "l"(b[0]),"l"(b[1]),"l"(b[2]),"l"(b[3]));
-```
+**Dedicated squaring.** `fe_sqr` no longer calls `fe_mul`. `u256_sqr` computes
+the six off-diagonal products once and doubles them, then adds the four diagonal
+squares — 10 multiplies instead of 16. Squaring dominates the 255-squaring
+inverse chain and every point doubling, so this is a broad win.
 
-Keep each carry chain inside a **single** `asm` block. Splitting one chain
-across several statements relies on the carry flag surviving between them, which
-is not something the compiler guarantees.
+Because the CUDA path cannot be exercised without a GPU, both changes are
+validated on the host in ways that catch logic errors regardless:
 
-**Dedicated squaring.** `fe_sqr` currently calls `fe_mul`. A real squaring
-routine computes the off-diagonal products once and doubles them, saving about a
-third of the work. Squaring is roughly one operation in three here, and
-dominates the inversion chain.
+- `test_math` cross-checks `fe_sqr` against `fe_mul(a,a)` over 100k random
+  inputs plus edge cases near `p`.
+- `test_ptx_sequence` re-implements the exact PTX multiply instruction sequence
+  under a carry-flag model matching PTX semantics and checks it against an
+  independent bignum multiply over 500k inputs. If the asm sequence is wrong,
+  this test diverges. It must be kept in sync with the asm by hand.
 
-After either change, re-run `make test` and `--selftest`.
+This is not a substitute for real hardware: **run `--selftest` on the target
+GPU** before a real search. It re-derives known keys on the device and will
+catch anything the host cross-checks cannot (a bad opcode, an assembler quirk, a
+compiler/driver mismatch).
+
+Expected combined speedup over the portable path is roughly 1.3–1.8×, hardware
+dependent; measure on your card.
+
+After any change to the arithmetic, re-run `make test` and `--selftest`.
 
 ---
 
@@ -293,9 +310,11 @@ After either change, re-run `make test` and `--selftest`.
 src/secp256k1.h              field + curve arithmetic, host and device
 src/targets.h                target parsing and lookup table, host and device
 src/search.cu                kernel and CLI
-test/test_math.cpp           arithmetic vs Python reference vectors
+test/test_math.cpp           arithmetic vs Python vectors; squaring cross-check
 test/test_kernel_logic.cpp   CPU replay of the kernel loop, coverage proof
 test/test_targets.cpp        target parsing and lookup-table probe
+test/test_progress.cpp       progress-meter formatting and rate/ETA logic
+test/test_ptx_sequence.cpp   device PTX multiply sequence vs bignum reference
 tools/gen_vectors.py         regenerates test/vectors.h
 tools/make_test_targets.py   builds target files, optionally with a planted key
 ```
