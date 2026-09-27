@@ -4,7 +4,7 @@ Searches every private key sharing a fixed high-order prefix, derives the
 compressed public key for each, and reports any that appear in a target list.
 
 A 27-byte (216-bit) prefix leaves 40 unknown bits — **1,099,511,627,776 keys**.
-On a modern GPU that is a run of roughly 15 minutes to an hour.
+On a modern GPU that is a run of roughly 5 minutes to an hour.
 
 On a match it prints the 33-byte compressed public key and the full 256-bit
 private key, both in hex, appends them to a file, and can run a command of your
@@ -69,18 +69,20 @@ locate a host compiler.
 Open the **x64 Native Tools Command Prompt for VS 2022** (not plain cmd — it
 sets up cl.exe) and run:
 
-```
-build.bat 86
-```
-
-The argument is your compute capability without the dot. Find it with:
+You need to know your cards compute capacity before compiling, find it with:
 
 ```
 nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
 ```
 
-The script builds `keyhunt-gpu.exe`, builds the three host tests, and runs
-them. Or use CMake, which works on both platforms:
+The pass your compute capability without the dot to the build.bat file.\
+
+```
+build.bat 86
+```
+
+The script builds `keyhunt-gpu.exe`, builds the host tests, and runs them. Or use CMake, 
+which works on both platforms: 
 
 ```
 cmake -B build -DCMAKE_CUDA_ARCHITECTURES=86
@@ -91,7 +93,7 @@ ctest --test-dir build
 Tunables, all optional:
 
 ```
-make HSIZE=128        # keys per batch inversion = 2*HSIZE (default 256)
+make HSIZE=256        # keys per batch inversion = 2*HSIZE (default 512)
 make FILTER=17        # log2 of the prefilter bits (default 19 = 64 KB shared)
 ```
 
