@@ -9,8 +9,8 @@ setlocal
 set ARCH=86
 if not "%~1"=="" set ARCH=%~1
 
-set HSIZE=256
-set FILTER=19
+set HSIZE=1024
+set FILTER=17
 
 where nvcc >nul 2>&1 || (echo ERROR: nvcc not found. Is the CUDA Toolkit installed and on PATH? & exit /b 1)
 where cl   >nul 2>&1 || (echo ERROR: cl.exe not found. Use the x64 Native Tools Command Prompt. & exit /b 1)

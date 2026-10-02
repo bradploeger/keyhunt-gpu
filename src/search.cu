@@ -52,7 +52,7 @@ struct Result { uint64_t offset; uint32_t tidx; uint32_t pad; };
 // the jump used to advance the group centre.  Read uniformly across a warp,
 // so __constant__ broadcast is the right storage class.
 __constant__ uint64_t c_gx[HSIZE + 1][4];
-__constant__ uint64_t c_gy[HSIZE + 1][4];
+__device__ uint64_t c_gy[HSIZE + 1][4];
 
 // ------------------------------------------------------------------ matching
 __device__ __forceinline__ void check_x(
