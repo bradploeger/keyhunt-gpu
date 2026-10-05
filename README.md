@@ -137,9 +137,8 @@ Full options:
 --groups N          groups per launch; controls progress/checkpoint interval
 --checkpoint FILE   save progress after every launch
 --resume            start from the checkpoint
---notify-cmd CMD    run on a match. %P becomes the pubkey, %K the private key
---no-glv            disable the endomorphism expansion (search 1x, not 3x)
 --notify-cmd CMD    run on a match. %P becomes the pubkey, %K the sealed blob
+--no-glv            disable the endomorphism expansion (search 1x, not 3x)
 --selftest          validate the device and find a planted key
 ```
 
