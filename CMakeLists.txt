@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.18)
 project(keyhunt_gpu LANGUAGES CXX CUDA)
 
+find_package(OpenSSL REQUIRED)
+
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 14)
@@ -27,6 +29,7 @@ endif()
 
 add_executable(keyhunt-gpu src/search.cu)
 target_compile_definitions(keyhunt-gpu PRIVATE ${KH_DEFS})
+target_link_libraries(keyhunt-gpu PRIVATE OpenSSL::Crypto)
 target_compile_options(keyhunt-gpu PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:-O3 -Xptxas -O3,-v>)
 
@@ -37,6 +40,10 @@ foreach(t test_math test_kernel_logic test_targets test_progress test_ptx_sequen
   target_compile_definitions(${t} PRIVATE ${KH_DEFS})
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+add_executable(test_seal test/test_seal.cpp)
+target_link_libraries(test_seal PRIVATE OpenSSL::Crypto)
+add_test(NAME test_seal COMMAND test_seal)
 
 message(STATUS "architectures : ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "HSIZE=${HSIZE}  FILTER=${FILTER}")

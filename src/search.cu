@@ -26,6 +26,7 @@
 #include <sstream>
 
 #include "targets.h"
+#include "seal.h"
 
 
 // ----------------------------------------------------------------- tunables
@@ -248,22 +249,48 @@ static void upload_gtable() {
 }
 
 // ------------------------------------------------------------------ reporting
+// A recovered private key is NEVER printed or written in the clear. It is
+// serialized big-endian (matching hex256) and sealed to the server's X25519
+// key (loaded from server.pub at startup); only the holder of the server's
+// X25519 secret can open the result. The console, the out file, and the
+// notify command all receive the sealed blob, not the key.
 static void report(const Config &cfg, const Target &tg,
                    const uint64_t priv[4], bool negated) {
-  std::string ph = hex256(priv);
+  unsigned char pk[32];
+  for (int i = 0; i < 4; i++) {
+    uint64_t limb = priv[3 - i];
+    for (int j = 0; j < 8; j++) pk[i * 8 + j] = (unsigned char)(limb >> (56 - 8 * j));
+  }
+
+  std::string sealed, err;
+  bool ok = kh_seal(cfg.recipientX, pk, 32, sealed, err);
+  // Don't leave the key sitting in a stack buffer longer than needed.
+  memset(pk, 0, sizeof(pk));
+
   printf("\n");
   printf("========================================================================\n");
   printf("  MATCH FOUND\n");
   printf("  compressed public key : %s\n", tg.pub.c_str());
-  printf("  private key (256 bit) : %s\n", ph.c_str());
   if (negated)
-    printf("  note: X matched with opposite Y parity, so the key is n - k\n");
+    printf("  note: X matched with opposite Y parity, so the sealed key is n - k\n");
+  if (ok) {
+    printf("  private key           : sealed to %s, not shown\n",
+           cfg.serverPubFile.c_str());
+    printf("  sealed (open server-side with the X25519 secret):\n  %s\n",
+           sealed.c_str());
+  } else {
+    printf("  ERROR: could not seal the private key (%s);\n"
+           "         the match is NOT being recorded, to avoid writing it in the clear.\n",
+           err.c_str());
+  }
   printf("========================================================================\n");
   fflush(stdout);
 
+  if (!ok) return;   // never fall back to plaintext
+
   FILE *f = fopen(cfg.outFile.c_str(), "a");
   if (f) {
-    fprintf(f, "pubkey=%s privkey=%s%s\n", tg.pub.c_str(), ph.c_str(),
+    fprintf(f, "pubkey=%s sealed=%s%s\n", tg.pub.c_str(), sealed.c_str(),
             negated ? " (n-k)" : "");
     fflush(f);
     fclose(f);
@@ -272,7 +299,7 @@ static void report(const Config &cfg, const Target &tg,
     std::string c = cfg.notifyCmd;
     size_t p;
     while ((p = c.find("%P")) != std::string::npos) c.replace(p, 2, tg.pub);
-    while ((p = c.find("%K")) != std::string::npos) c.replace(p, 2, ph);
+    while ((p = c.find("%K")) != std::string::npos) c.replace(p, 2, sealed);
     if (system(c.c_str()) != 0) fprintf(stderr, "notify command returned non-zero\n");
   }
 }
@@ -496,14 +523,16 @@ static void usage() {
 "                      27 bytes / 54 hex chars leaves a 2^40 search space.\n"
 "  --targets FILE      one compressed pubkey per line (02/03 + 64 hex),\n"
 "                      or uncompressed (04 + 128 hex). '#' starts a comment.\n"
-"  --out FILE          append matches here (default found.txt)\n"
+"  --out FILE          append sealed matches here (default found.txt)\n"
+"  --server-info FILE  server public-key json (default server.pub); its\n"
+"                      x25519 key is used to seal found private keys\n"
 "  --device N          CUDA device index (default 0)\n"
 "  --blocks N          grid size, power of two (default: 8 x SM count)\n"
 "  --threads N         block size, power of two (default 256)\n"
 "  --groups N          groups per kernel launch, controls report interval\n"
 "  --checkpoint FILE   write progress here after every launch\n"
 "  --resume            start from the checkpoint file\n"
-"  --notify-cmd CMD    run on a match; %%P -> pubkey, %%K -> private key\n"
+"  --notify-cmd CMD    run on a match; %%P -> pubkey, %%K -> sealed blob\n"
 "  --selftest          validate device arithmetic and find a planted key\n"
 "  --help\n");
 }
@@ -523,6 +552,7 @@ int main(int argc, char **argv) {
     else if (a == "--checkpoint") cfg.ckptFile = next();
     else if (a == "--resume") cfg.resume = true;
     else if (a == "--notify-cmd") cfg.notifyCmd = next();
+    else if (a == "--server-info") cfg.serverPubFile = next();
     else if (a == "--selftest") cfg.selftest = true;
     else if (a == "--help" || a == "-h") { usage(); return 0; }
     else { fprintf(stderr, "unknown option %s\n", argv[i]); usage(); return 1; }
@@ -545,6 +575,21 @@ int main(int argc, char **argv) {
   }
 
   upload_gtable();
+
+  {
+    std::string err;
+    if (!kh_load_recipient_x(cfg.serverPubFile, cfg.recipientX, err)) {
+      fprintf(stderr,
+        "\nfatal: %s\n"
+        "A valid server public-key file is required so that any found private\n"
+        "key can be sealed to the server's X25519 key instead of being written\n"
+        "in the clear. Put a server.pub (as produced by the coordination\n"
+        "server's keygen.py) in the current directory, or pass --server-info.\n",
+        err.c_str());
+      return 1;
+    }
+    printf("match sealing  : enabled, to x25519 key in %s\n", cfg.serverPubFile.c_str());
+  }
 
   if (cfg.selftest) return run_selftest(cfg);
 
