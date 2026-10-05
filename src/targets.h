@@ -96,6 +96,8 @@ struct Target { uint64_t x[4]; uint8_t parity; std::string pub; };
 
 struct Config {
   std::string prefixHex, targetFile, outFile = "found.txt", notifyCmd, ckptFile;
+  std::string serverPubFile = "server.pub";
+  unsigned char recipientX[32] = {0};   // server X25519 public key, loaded at startup
   int device = 0, blocks = 0, threads = 256;
   uint64_t groupsPerLaunch = 256;
   bool selftest = false, resume = false;

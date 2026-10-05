@@ -20,19 +20,20 @@ BIN = keyhunt-gpu
 
 all: $(BIN)
 
-$(BIN): src/search.cu src/secp256k1.h
-	$(NVCC) $(NVCCFLAGS) -o $@ src/search.cu
+$(BIN): src/search.cu src/secp256k1.h src/targets.h src/seal.h
+	$(NVCC) $(NVCCFLAGS) -o $@ src/search.cu -lcrypto
 
 # Host-only validation of the shared arithmetic header. Runs without a GPU.
 test: test/test_math.cpp test/test_kernel_logic.cpp test/test_targets.cpp \
-      test/test_progress.cpp test/test_ptx_sequence.cpp \
-      src/secp256k1.h src/targets.h src/progress.h
+      test/test_progress.cpp test/test_ptx_sequence.cpp test/test_seal.cpp \
+      src/secp256k1.h src/targets.h src/progress.h src/seal.h
 	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_math test/test_math.cpp
 	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_logic test/test_kernel_logic.cpp
 	$(CXX) -O2 -std=c++14 -DFILTER_LOG2_BITS=$(FILTER) \
 	    -o /tmp/kh_test_targets test/test_targets.cpp
 	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_progress test/test_progress.cpp
 	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_ptx test/test_ptx_sequence.cpp
+	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_seal test/test_seal.cpp -lcrypto
 	/tmp/kh_test_math
 	@echo
 	/tmp/kh_test_logic
@@ -42,11 +43,13 @@ test: test/test_math.cpp test/test_kernel_logic.cpp test/test_targets.cpp \
 	/tmp/kh_test_progress
 	@echo
 	/tmp/kh_test_ptx
+	@echo
+	/tmp/kh_test_seal
 
 vectors:
 	python3 tools/gen_vectors.py > test/vectors.h
 
 clean:
-	rm -f $(BIN) /tmp/kh_test_math /tmp/kh_test_logic /tmp/kh_test_targets /tmp/kh_test_progress /tmp/kh_test_ptx
+	rm -f $(BIN) /tmp/kh_test_math /tmp/kh_test_logic /tmp/kh_test_targets /tmp/kh_test_progress /tmp/kh_test_ptx /tmp/kh_test_seal
 
 .PHONY: all test clean vectors

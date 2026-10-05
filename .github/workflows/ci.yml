@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: install a C++ toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++ python3
+        run: sudo apt-get update && sudo apt-get install -y g++ python3 libssl-dev
       - name: regenerate reference vectors and run all host tests
         run: |
           python3 tools/gen_vectors.py > test/vectors.h
