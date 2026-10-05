@@ -6,9 +6,13 @@ compressed public key for each, and reports any that appear in a target list.
 A 27-byte (216-bit) prefix leaves 40 unknown bits — **1,099,511,627,776 keys**.
 On a modern GPU that is a run of roughly 5 minutes to an hour.
 
-On a match it prints the 33-byte compressed public key and the full 256-bit
-private key, both in hex, appends them to a file, and can run a command of your
-choosing (for email, Telegram, ntfy, whatever you use).
+On a match it prints the 33-byte compressed public key but **never the private
+key**: the private key is sealed to the coordination server's X25519 key (a
+one-shot sealed box) and only that ciphertext is printed, appended to the out
+file, and passed to an optional notify command. Only the holder of the server's
+X25519 secret can open it, so the search node never holds, prints, or transmits
+a recovered key in the clear. A `server.pub` (the same file the node and server
+use) must be present at startup.
 
 To run this across many machines, see the companion repositories
 [`keyhunt-coord-server`](#) (hands out random 216-bit prefix blocks and collects
@@ -49,7 +53,10 @@ sound end to end.
 
 ## Build
 
-Needs CUDA 11 or newer.
+Needs CUDA 11 or newer, and OpenSSL (libcrypto) for sealing found keys.
+
+On Debian/Ubuntu: `sudo apt-get install libssl-dev`. On Windows, install OpenSSL
+(e.g. via vcpkg: `vcpkg install openssl`) so the linker can find `libcrypto`.
 
 ### Linux
 
@@ -121,7 +128,9 @@ Full options:
                     (02/03 + 64 hex), bare uncompressed (04 + 128 hex), or a
                     raw P2PK scriptPubKey (21...ac / 41...ac), which is
                     unwrapped automatically. '#' starts a comment.
---out FILE          append matches here (default found.txt)
+--out FILE          append sealed matches here (default found.txt)
+--server-info FILE  server public-key json (default server.pub); its
+                    x25519 key seals any found private key
 --device N          CUDA device index
 --blocks N          grid size, power of two (default 8 x SM count)
 --threads N         block size, power of two (default 256)
@@ -130,6 +139,7 @@ Full options:
 --resume            start from the checkpoint
 --notify-cmd CMD    run on a match. %P becomes the pubkey, %K the private key
 --no-glv            disable the endomorphism expansion (search 1x, not 3x)
+--notify-cmd CMD    run on a match. %P becomes the pubkey, %K the sealed blob
 --selftest          validate the device and find a planted key
 ```
 
@@ -166,9 +176,17 @@ Output on a hit:
 ========================================================================
   MATCH FOUND
   compressed public key : 02aedf62f361689b22568ad68a55899733563c88...
-  private key (256 bit) : a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4...
+  private key           : sealed to server.pub, not shown
+  sealed (open server-side with the X25519 secret):
+  7b3b...<184 hex chars>...e1
 ========================================================================
 ```
+
+The `sealed=` blob (epk ‖ nonce ‖ ChaCha20-Poly1305 ciphertext, hex) is what
+lands in the out file and is handed to the node, which forwards it to the
+coordination server. The server opens it with its X25519 secret and re-verifies
+the key before trusting it. The format matches `protocol.py`'s
+`seal_secret()` / `open_sealed()` in the node and server repos.
 
 To build a test target list, `tools/make_test_targets.py` generates decoys and
 can plant a real key at a chosen offset:
