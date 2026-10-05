@@ -137,6 +137,8 @@ Full options:
 --groups N          groups per launch; controls progress/checkpoint interval
 --checkpoint FILE   save progress after every launch
 --resume            start from the checkpoint
+--notify-cmd CMD    run on a match. %P becomes the pubkey, %K the private key
+--no-glv            disable the endomorphism expansion (search 1x, not 3x)
 --notify-cmd CMD    run on a match. %P becomes the pubkey, %K the sealed blob
 --selftest          validate the device and find a planted key
 ```
@@ -249,6 +251,38 @@ and `n − k`. If a target matches with the opposite Y parity, the tool reports
 
 Expect somewhere between 300 Mkey/s and 1.5 Gkey/s depending on the card. At
 500 Mkey/s a 2^40 range takes about 37 minutes; at 1.2 Gkey/s, about 15.
+
+### Endomorphism (GLV) coverage — on by default
+
+secp256k1 has an efficiently computable endomorphism: constants `beta` (mod p)
+and `lambda` (mod n) with `beta^3 = 1`, `lambda^3 = 1`, such that for any point
+`lambda*P = (beta*x, y)`. So a target `T = t*G` and its two images `lambda*T`,
+`lambda^2*T` share a y-coordinate and have x-coordinates `x`, `beta*x`,
+`beta^2*x`, with private keys `t`, `lambda*t`, `lambda^2*t`.
+
+The tool stores all three x-coordinates of every target in the lookup table, so
+**each point the kernel generates implicitly tests three targets at once** — up
+to a 3x gain in targets covered per key computed, for free in the inner loop:
+the kernel is byte-for-byte unchanged, matching is still a single X probe, and
+the only added work is building a 3x-larger table and, on a hit, one modular
+multiply and an independent re-derivation of the key.
+
+On a hit against image *j*, the generated point `k*G` equals `±lambda^j * T`, so
+the recovered key is `t = lambda^(-j) * k mod n`. The host re-derives the target
+public key from `t` (trying the `n - t` reflection) and reports **nothing**
+unless it reproduces the target exactly — so a bad constant or a tag collision
+can never yield a false hit. The recovered key is the matched target's genuine
+private key; note that for an image hit (`j != 0`) it does **not** lie in the
+searched prefix range (it is a `lambda`-multiple of the offset), which is why
+this helps only when the goal is "recover any matched pubkey's key," the same
+sense in which the tool already reports `n - k`. Pass `--no-glv` to turn the
+expansion off and match targets by their own x only.
+
+Because the table now holds 3x as many x-coordinates, the shared-memory
+prefilter fills up 3x faster, so its reject rate drops at a given `FILTER`. If
+the profiler shows matching (not arithmetic) becoming the bottleneck with GLV
+on, raise `FILTER` by one or two (e.g. `make FILTER=20`) to restore the reject
+rate — subject to the shared-memory budget noted above.
 
 ---
 

@@ -92,6 +92,76 @@ static void order_minus(uint64_t r[4], const uint64_t k[4]) {
   for (int i = 0; i < 4; i++) r[i] = subb64(nn[i], k[i], brw, &brw);
 }
 
+// ------------------------------------------------- GLV endomorphism (host only)
+// secp256k1 has an efficiently computable endomorphism: constants beta (mod p)
+// and lambda (mod n), with beta^3 = 1 mod p, lambda^3 = 1 mod n, such that for
+// any point P = (x, y):   lambda * P = (beta * x, y).
+//
+// So the three points T, lambda*T, lambda^2*T share the y-coordinate (hence the
+// compressed parity) and have x-coordinates x, beta*x, beta^2*x, with private
+// keys t, lambda*t, lambda^2*t. By also storing beta*x and beta^2*x of every
+// target in the lookup table, each generated point's single X implicitly tests
+// all three -- up to 3x the targets covered per key computed, with no change to
+// the device kernel. On a hit against image j, the matched point P = k*G equals
+// +/- lambda^j * T, so the target's key is t = lambda^(-j) * k mod n (and the
+// host re-derives T from t to confirm before reporting, so a wrong constant or
+// a tag collision can never produce a false result).
+//
+// These helpers run on the host only -- at table-build time and, for the scalar
+// reduction mod n, once per confirmed match -- so they favour clarity over
+// speed. The field multiply (fe_mul, mod p) comes from secp256k1.h.
+
+// Reduce (carry:r), known to be < 2n, to r mod n in place.
+static void glv__reduce_once_n(uint64_t r[4], uint64_t carry) {
+  const uint64_t nn[4] = {N0, N1, N2, N3};
+  if (carry || cmp256(r, nn) >= 0) {
+    uint64_t t[4];
+    u256_sub(t, r, nn);   // when carry==1, r<n is guaranteed; the borrow wrap
+    fe_set(r, t);         // makes this the correct (2^256 + r - n) low word
+  }
+}
+
+static void glv__modadd_n(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+  uint64_t c = u256_add(r, a, b);
+  glv__reduce_once_n(r, c);
+}
+
+// r = a * b mod n, binary (LSB-first) double-and-add. Inputs need not be reduced.
+static void mulmod_n(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]) {
+  const uint64_t nn[4] = {N0, N1, N2, N3};
+  uint64_t base[4];
+  fe_set(base, a);
+  if (cmp256(base, nn) >= 0) { uint64_t t[4]; u256_sub(t, base, nn); fe_set(base, t); }
+  uint64_t acc[4] = {0, 0, 0, 0};
+  for (int i = 0; i < 256; i++) {
+    if ((b[i >> 6] >> (i & 63)) & 1ULL) glv__modadd_n(acc, acc, base);
+    glv__modadd_n(base, base, base);
+  }
+  fe_set(r, acc);
+}
+
+struct Glv {
+  uint64_t beta[4], beta2[4];   // beta, beta^2  (mod p)
+  uint64_t mult[3][4];          // key-recovery multiplier for image j: lambda^(-j) mod n
+};
+
+// beta and lambda are the standard secp256k1 endomorphism constants. Parsed from
+// hex rather than hand-transcribed into limbs, and cross-checked at startup and
+// in test_glv against the curve itself (lambda*G has x == beta*x_G).
+static Glv glv_init() {
+  Glv g;
+  uint64_t lambda[4], lambda2[4];
+  parse_hex("7ae96a2b657c07106e64479eac3434e99cf0497512f58995c1396c28719501ee", g.beta);
+  parse_hex("5363ad4cc05c30e0a5261c028812645a122e22ea20816678df02967c1b23bd72", lambda);
+  fe_mul(g.beta2, g.beta, g.beta);      // beta^2 mod p
+  mulmod_n(lambda2, lambda, lambda);    // lambda^2 mod n  (= lambda^-1)
+  // image 0 -> *1 ; image 1 -> *lambda^-1 = lambda^2 ; image 2 -> *lambda^-2 = lambda
+  g.mult[0][0] = 1; g.mult[0][1] = g.mult[0][2] = g.mult[0][3] = 0;
+  fe_set(g.mult[1], lambda2);
+  fe_set(g.mult[2], lambda);
+  return g;
+}
+
 struct Target { uint64_t x[4]; uint8_t parity; std::string pub; };
 
 struct Config {
@@ -111,7 +181,8 @@ struct TargetTable {
   uint32_t mask;
 };
 
-static TargetTable build_table(const std::vector<Target> &tg) {
+template <class Row>
+static TargetTable build_table(const std::vector<Row> &tg) {
   TargetTable t;
   t.filter.assign(FILTER_WORDS, 0);
   uint32_t n = 1;
@@ -131,6 +202,27 @@ static TargetTable build_table(const std::vector<Target> &tg) {
     t.idx[s] = (uint32_t)i;
   }
   return t;
+}
+
+// A single device-matchable entry: one x-coordinate the kernel looks for. With
+// GLV each target expands to three (the target and its two endomorphism images,
+// jimg = 0,1,2); without it, one. parity is the target's compressed parity (the
+// endomorphism leaves y, hence parity, unchanged); tgt indexes the real target.
+struct MatchEntry { uint64_t x[4]; uint8_t parity; uint8_t jimg; uint32_t tgt; };
+
+static std::vector<MatchEntry> build_entries(const std::vector<Target> &tg,
+                                             const Glv &g, bool glv_on) {
+  std::vector<MatchEntry> e;
+  e.reserve(tg.size() * (glv_on ? 3 : 1));
+  for (uint32_t i = 0; i < tg.size(); i++) {
+    MatchEntry m; m.parity = tg[i].parity; m.tgt = i;
+    m.jimg = 0; fe_set(m.x, tg[i].x);            e.push_back(m);
+    if (glv_on) {
+      m.jimg = 1; fe_mul(m.x, tg[i].x, g.beta);  e.push_back(m);
+      m.jimg = 2; fe_mul(m.x, tg[i].x, g.beta2); e.push_back(m);
+    }
+  }
+  return e;
 }
 
 static bool load_targets(const std::string &path, std::vector<Target> &out) {
