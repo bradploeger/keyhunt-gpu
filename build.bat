@@ -38,7 +38,7 @@ if errorlevel 1 (echo BUILD FAILED & exit /b 1)
 
 echo.
 echo Building host tests ...
-for %%T in (test_math test_kernel_logic test_targets test_progress test_ptx_sequence) do (
+for %%T in (test_math test_kernel_logic test_targets test_progress test_ptx_sequence test_glv) do (
   cl /nologo /O2 /EHsc /std:c++14 /D_CRT_SECURE_NO_WARNINGS ^
      /DHSIZE=%HSIZE% /DFILTER_LOG2_BITS=%FILTER% ^
      test\%%T.cpp /Fe:%%T.exe /Fo:%%T.obj >nul
@@ -63,6 +63,8 @@ echo.
 test_ptx_sequence.exe  || exit /b 1
 echo.
 test_seal.exe          || exit /b 1
+echo.
+test_glv.exe           || exit /b 1
 
 echo.
 echo NOTE: libcrypto-3-x64.dll (from %OPENSSL_DIR%\bin) must be on PATH at runtime.

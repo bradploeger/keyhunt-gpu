@@ -256,8 +256,6 @@ static void upload_gtable() {
 // notify command all receive the sealed blob, not the key.
 static void report(const Config &cfg, const Target &tg,
                    const uint64_t priv[4], const std::string &note) {
-  std::string ph = hex256(priv);
-                   const uint64_t priv[4], bool negated) {
   unsigned char pk[32];
   for (int i = 0; i < 4; i++) {
     uint64_t limb = priv[3 - i];
@@ -273,11 +271,8 @@ static void report(const Config &cfg, const Target &tg,
   printf("========================================================================\n");
   printf("  MATCH FOUND\n");
   printf("  compressed public key : %s\n", tg.pub.c_str());
-  printf("  private key (256 bit) : %s\n", ph.c_str());
   if (!note.empty())
     printf("  note: %s\n", note.c_str());
-  if (negated)
-    printf("  note: X matched with opposite Y parity, so the sealed key is n - k\n");
   if (ok) {
     printf("  private key           : sealed to %s, not shown\n",
            cfg.serverPubFile.c_str());
@@ -295,10 +290,8 @@ static void report(const Config &cfg, const Target &tg,
 
   FILE *f = fopen(cfg.outFile.c_str(), "a");
   if (f) {
-    fprintf(f, "pubkey=%s privkey=%s%s%s\n", tg.pub.c_str(), ph.c_str(),
+    fprintf(f, "pubkey=%s sealed=%s%s%s\n", tg.pub.c_str(), sealed.c_str(),
             note.empty() ? "" : " # ", note.c_str());
-    fprintf(f, "pubkey=%s sealed=%s%s\n", tg.pub.c_str(), sealed.c_str(),
-            negated ? " (n-k)" : "");
     fflush(f);
     fclose(f);
   }
@@ -571,9 +564,8 @@ static void usage() {
 "  --groups N          groups per kernel launch, controls report interval\n"
 "  --checkpoint FILE   write progress here after every launch\n"
 "  --resume            start from the checkpoint file\n"
-"  --notify-cmd CMD    run on a match; %%P -> pubkey, %%K -> private key\n"
-"  --no-glv            do not search endomorphism images (1x targets, not 3x)\n"
 "  --notify-cmd CMD    run on a match; %%P -> pubkey, %%K -> sealed blob\n"
+"  --no-glv            do not search endomorphism images (1x targets, not 3x)\n"
 "  --selftest          validate device arithmetic and find a planted key\n"
 "  --help\n");
 }
@@ -594,6 +586,7 @@ int main(int argc, char **argv) {
     else if (a == "--resume") cfg.resume = true;
     else if (a == "--notify-cmd") cfg.notifyCmd = next();
     else if (a == "--server-info") cfg.serverPubFile = next();
+    else if (a == "--no-glv") cfg.glv = false;
     else if (a == "--selftest") cfg.selftest = true;
     else if (a == "--help" || a == "-h") { usage(); return 0; }
     else { fprintf(stderr, "unknown option %s\n", argv[i]); usage(); return 1; }

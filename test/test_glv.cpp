@@ -33,14 +33,15 @@ int main() {
   Glv g = glv_init();
   const uint64_t *lambda  = g.mult[2];   // glv_init stores lambda in mult[2]
   const uint64_t *lambda2 = g.mult[1];   // and lambda^2 (= lambda^-1) in mult[1]
+  const uint64_t one_fe[4] = {1, 0, 0, 0};
 
   printf("[cube-root identities]\n");
   {
     uint64_t t[4];
     fe_mul(t, g.beta2, g.beta);                 // beta^3 mod p
-    check("beta^3 == 1 (mod p)", fe_eq(t, (const uint64_t[]){1, 0, 0, 0}));
+    check("beta^3 == 1 (mod p)", fe_eq(t, one_fe));
     mulmod_n(t, lambda2, lambda);               // lambda^3 mod n
-    check("lambda^3 == 1 (mod n)", fe_eq(t, (const uint64_t[]){1, 0, 0, 0}));
+    check("lambda^3 == 1 (mod n)", fe_eq(t, one_fe));
     mulmod_n(t, lambda, lambda);                // lambda^2 recomputed
     check("lambda^2 is consistent", fe_eq(t, lambda2));
   }
@@ -91,19 +92,16 @@ int main() {
 
       for (int j = 0; j < 3; j++) {
         for (int refl = 0; refl < 2; refl++) {
-          // k = scalar of the generated point matching image j (reflected = n-k)
           uint64_t k[4]; mulmod_n(k, fwd[j], t);
           if (refl) { uint64_t nk[4]; order_minus(nk, k); fe_set(k, nk); }
 
-          // replicate verify_and_report's recovery exactly
           uint64_t key[4]; mulmod_n(key, g.mult[j], k);
           uint64_t vx[4], vy[4]; ec_scalar_mul_g(vx, vy, key);
           if (compressed_hex(vx, vy) != pub) {
             uint64_t nk[4]; order_minus(nk, key); fe_set(key, nk);
             ec_scalar_mul_g(vx, vy, key);
           }
-          bool ok = (compressed_hex(vx, vy) == pub);
-          if (!ok) { printf("    recovery failed: seed %u image %d refl %d\n", s, j, refl); FAILS++; }
+          if (compressed_hex(vx, vy) != pub) { printf("    recovery failed: seed %u image %d refl %d\n", s, j, refl); FAILS++; }
           cases++;
         }
       }
