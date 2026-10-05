@@ -31,8 +31,7 @@ test: test/test_math.cpp test/test_kernel_logic.cpp test/test_targets.cpp \
       src/secp256k1.h src/targets.h src/progress.h src/seal.h
 	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_math test/test_math.cpp
 	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_logic test/test_kernel_logic.cpp
-	$(CXX) -O2 -std=c++14 -DFILTER_LOG2_BITS=$(FILTER) \
-	    -o /tmp/kh_test_targets test/test_targets.cpp
+	$(CXX) -O2 -std=c++14 -DFILTER_LOG2_BITS=$(FILTER) -o /tmp/kh_test_targets test/test_targets.cpp
 	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_progress test/test_progress.cpp
 	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_ptx test/test_ptx_sequence.cpp
 	$(CXX) -O2 -std=c++14 -o /tmp/kh_test_glv test/test_glv.cpp
