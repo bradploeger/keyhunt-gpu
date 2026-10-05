@@ -32,7 +32,7 @@ target_compile_options(keyhunt-gpu PRIVATE
 
 # ---- host-side tests, no GPU required
 enable_testing()
-foreach(t test_math test_kernel_logic test_targets test_progress test_ptx_sequence)
+foreach(t test_math test_kernel_logic test_targets test_progress test_ptx_sequence test_glv)
   add_executable(${t} test/${t}.cpp)
   target_compile_definitions(${t} PRIVATE ${KH_DEFS})
   add_test(NAME ${t} COMMAND ${t})

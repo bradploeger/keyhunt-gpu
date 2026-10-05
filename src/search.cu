@@ -249,22 +249,22 @@ static void upload_gtable() {
 
 // ------------------------------------------------------------------ reporting
 static void report(const Config &cfg, const Target &tg,
-                   const uint64_t priv[4], bool negated) {
+                   const uint64_t priv[4], const std::string &note) {
   std::string ph = hex256(priv);
   printf("\n");
   printf("========================================================================\n");
   printf("  MATCH FOUND\n");
   printf("  compressed public key : %s\n", tg.pub.c_str());
   printf("  private key (256 bit) : %s\n", ph.c_str());
-  if (negated)
-    printf("  note: X matched with opposite Y parity, so the key is n - k\n");
+  if (!note.empty())
+    printf("  note: %s\n", note.c_str());
   printf("========================================================================\n");
   fflush(stdout);
 
   FILE *f = fopen(cfg.outFile.c_str(), "a");
   if (f) {
-    fprintf(f, "pubkey=%s privkey=%s%s\n", tg.pub.c_str(), ph.c_str(),
-            negated ? " (n-k)" : "");
+    fprintf(f, "pubkey=%s privkey=%s%s%s\n", tg.pub.c_str(), ph.c_str(),
+            note.empty() ? "" : " # ", note.c_str());
     fflush(f);
     fclose(f);
   }
@@ -277,23 +277,49 @@ static void report(const Config &cfg, const Target &tg,
   }
 }
 
-// Recompute from scratch and confirm before announcing anything.
+// Recompute from scratch and confirm before announcing anything. The generated
+// point's X may match a target directly or via one of its two endomorphism
+// images; either way we re-derive the target's public key from the recovered
+// private key and report nothing unless it reproduces the target exactly.
 static bool verify_and_report(const Config &cfg, const std::vector<Target> &tg,
-                              const std::map<std::string, size_t> &byX,
-                              const uint64_t K0[4], uint64_t offset) {
-  uint64_t priv[4];
-  fe_set(priv, K0);
-  add64_256(priv, offset);
+                              const std::vector<MatchEntry> &entries,
+                              const std::map<std::string, size_t> &byImageX,
+                              const Glv &glv, const uint64_t K0[4], uint64_t offset) {
+  uint64_t k[4];
+  fe_set(k, K0);
+  add64_256(k, offset);                          // scalar of the generated point
 
   uint64_t x[4], y[4];
-  ec_scalar_mul_g(x, y, priv);
-  auto it = byX.find(hex256(x));
-  if (it == byX.end()) return false;             // tag collision
+  ec_scalar_mul_g(x, y, k);
+  auto it = byImageX.find(hex256(x));
+  if (it == byImageX.end()) return false;        // tag collision / not one of ours
 
-  const Target &t = tg[it->second];
-  bool parityMatches = ((y[0] & 1ULL) == t.parity);
-  if (parityMatches) { report(cfg, t, priv, false); }
-  else { uint64_t nk[4]; order_minus(nk, priv); report(cfg, t, nk, true); }
+  const MatchEntry &me = entries[it->second];
+  const Target &t = tg[me.tgt];
+
+  // t_key = lambda^(-jimg) * k mod n. Confirm by deriving the pubkey; if the
+  // match was against the reflected point (opposite Y parity), use n - key.
+  uint64_t key[4];
+  mulmod_n(key, glv.mult[me.jimg], k);
+  uint64_t vx[4], vy[4];
+  ec_scalar_mul_g(vx, vy, key);
+  bool reflected = false;
+  if (compressed_hex(vx, vy) != t.pub) {
+    uint64_t nk[4]; order_minus(nk, key); fe_set(key, nk);
+    ec_scalar_mul_g(vx, vy, key);
+    reflected = true;
+  }
+  if (compressed_hex(vx, vy) != t.pub) return false;   // not a genuine recovery
+
+  std::string note;
+  if (me.jimg != 0)
+    note = std::string("matched via endomorphism image ") +
+           (me.jimg == 1 ? "lambda" : "lambda^2") +
+           (reflected ? " (key reflected: n - k)" : "");
+  else if (reflected)
+    note = "X matched with opposite Y parity, so the sealed key is n - k";
+
+  report(cfg, t, key, note);
   return true;
 }
 
@@ -315,9 +341,14 @@ static int run_search(const Config &cfg, const std::vector<Target> &targets,
     fflush(stdout);
   }
 
-  TargetTable tt = build_table(targets);
-  std::map<std::string, size_t> byX;
-  for (size_t i = 0; i < targets.size(); i++) byX[hex256(targets[i].x)] = i;
+  Glv glv = glv_init();
+  std::vector<MatchEntry> entries = build_entries(targets, glv, cfg.glv);
+  TargetTable tt = build_table(entries);
+  std::map<std::string, size_t> byImageX;
+  for (size_t i = 0; i < entries.size(); i++) byImageX[hex256(entries[i].x)] = i;
+  if (!quiet)
+    printf("endomorphism   : %s\n", cfg.glv
+           ? "on (each key tests 3 images per target)" : "off");
 
   // The prefilter bitmap lives in dynamic shared memory: FILTER_WORDS*4 bytes.
   // At FILTER=20 that is 128 KB, well past the 48 KB default, so we must opt in
@@ -398,7 +429,8 @@ static int run_search(const Config &cfg, const std::vector<Target> &targets,
     if (cnt) {
       std::vector<Result> r(std::min(cnt, (uint32_t)MAX_RESULTS));
       CUDA_CHECK(cudaMemcpy(r.data(), d_res, r.size() * sizeof(Result), cudaMemcpyDeviceToHost));
-      for (auto &x : r) if (verify_and_report(cfg, targets, byX, K0, x.offset)) found++;
+      for (auto &x : r)
+        if (verify_and_report(cfg, targets, entries, byImageX, glv, K0, x.offset)) found++;
       CUDA_CHECK(cudaMemset(d_cnt, 0, 4));
     }
 
@@ -504,6 +536,7 @@ static void usage() {
 "  --checkpoint FILE   write progress here after every launch\n"
 "  --resume            start from the checkpoint file\n"
 "  --notify-cmd CMD    run on a match; %%P -> pubkey, %%K -> private key\n"
+"  --no-glv            do not search endomorphism images (1x targets, not 3x)\n"
 "  --selftest          validate device arithmetic and find a planted key\n"
 "  --help\n");
 }
