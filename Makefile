@@ -10,7 +10,7 @@ NVCC   ?= nvcc
 CXX    ?= g++
 ARCH   ?= native
 HSIZE  ?= 1024
-FILTER ?= 17
+FILTER ?= 19
 
 NVCCFLAGS = -O3 -std=c++14 -arch=$(ARCH) \
             -DHSIZE=$(HSIZE) -DFILTER_LOG2_BITS=$(FILTER) \

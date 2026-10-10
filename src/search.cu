@@ -53,7 +53,7 @@ struct Result { uint64_t offset; uint32_t tidx; uint32_t pad; };
 // the jump used to advance the group centre.  Read uniformly across a warp,
 // so __constant__ broadcast is the right storage class.
 __constant__ uint64_t c_gx[HSIZE + 1][4];
-__device__ uint64_t c_gy[HSIZE + 1][4];
+__constant__ uint64_t c_gy[HSIZE + 1][4];
 
 // ------------------------------------------------------------------ matching
 __device__ __forceinline__ void check_x(
@@ -267,24 +267,24 @@ static void report(const Config &cfg, const Target &tg,
   // Don't leave the key sitting in a stack buffer longer than needed.
   memset(pk, 0, sizeof(pk));
 
-  printf("\n");
-  printf("========================================================================\n");
-  printf("  MATCH FOUND\n");
-  printf("  compressed public key : %s\n", tg.pub.c_str());
-  if (!note.empty())
-    printf("  note: %s\n", note.c_str());
-  if (ok) {
-    printf("  private key           : sealed to %s, not shown\n",
-           cfg.serverPubFile.c_str());
-    printf("  sealed (open server-side with the X25519 secret):\n  %s\n",
-           sealed.c_str());
-  } else {
-    printf("  ERROR: could not seal the private key (%s);\n"
-           "         the match is NOT being recorded, to avoid writing it in the clear.\n",
-           err.c_str());
-  }
-  printf("========================================================================\n");
-  fflush(stdout);
+  //printf("\n");
+  //printf("========================================================================\n");
+  //printf("  MATCH FOUND\n");
+  //printf("  compressed public key : %s\n", tg.pub.c_str());
+//  if (!note.empty())
+//    printf("  note: %s\n", note.c_str());
+//  if (ok) {
+//    printf("  private key           : sealed to %s, not shown\n",
+//           cfg.serverPubFile.c_str());
+//    printf("  sealed (open server-side with the X25519 secret):\n  %s\n",
+//           sealed.c_str());
+ // } else {
+//    printf("  ERROR: could not seal the private key (%s);\n"
+//           "         the match is NOT being recorded, to avoid writing it in the clear.\n",
+//           err.c_str());
+//  }
+ // printf("========================================================================\n");
+ // fflush(stdout);
 
   if (!ok) return;   // never fall back to plaintext
 
@@ -359,11 +359,12 @@ static int run_search(const Config &cfg, const std::vector<Target> &targets,
   uint64_t groupsPerThread = keysPerThread / GRP_SIZE;
 
   if (!quiet) {
-    printf("range          : %s .. +2^%d\n", hex256(K0).c_str(), unknownBits);
+    //printf("range          : %s .. +2^%d\n", hex256(K0).c_str(), unknownBits);
+    printf("total keys     : %I64d\n", totalKeys);
     printf("targets        : %zu\n", targets.size());
-    printf("grid           : %d blocks x %d threads = %u threads\n",
+    printf("bundles        : %d blocks x %d threads = %u bundles\n",
            cfg.blocks, cfg.threads, nThreads);
-    printf("keys/thread    : %" PRIu64 "  (%" PRIu64 " groups of %d)\n",
+    printf("keys/bundle    : %" PRIu64 "  (%" PRIu64 " groups of %d)\n",
            keysPerThread, groupsPerThread, GRP_SIZE);
     fflush(stdout);
   }
@@ -471,7 +472,8 @@ static int run_search(const Config &cfg, const std::vector<Target> &targets,
       meter.print(doneKeys, el, found);
     }
   }
-  if (!quiet) { meter.finish(); printf("search complete, %d match(es)\n", found); }
+  //if (!quiet) { meter.finish(); printf("search complete, %d match(es)", found); }
+  if (!quiet) { meter.finish(); printf("search complete.\n"); }
 
   cudaFree(d_filter); cudaFree(d_slots); cudaFree(d_idx);
   cudaFree(d_px); cudaFree(d_py); cudaFree(d_res); cudaFree(d_cnt);
@@ -622,7 +624,7 @@ int main(int argc, char **argv) {
         err.c_str());
       return 1;
     }
-    printf("match sealing  : enabled, to x25519 key in %s\n", cfg.serverPubFile.c_str());
+    //printf("match sealing  : enabled, to x25519 key in %s\n", cfg.serverPubFile.c_str());
   }
 
   if (cfg.selftest) return run_selftest(cfg);

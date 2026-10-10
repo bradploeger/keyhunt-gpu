@@ -8,6 +8,8 @@ build/
 *.exp
 *.lib
 *.pdb
+*.pub
+bin/
 
 # Test binaries (built to /tmp by the Makefile, but just in case)
 test_math
